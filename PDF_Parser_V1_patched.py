@@ -20,7 +20,7 @@ from pdfminer.layout import LAParams, LTTextContainer, LTTextLine, LTChar, LTLin
 # ================================================================
 # CONFIG RESTRAINTS
 # ================================================================
-TARGET_SUBJECTS = ["경찰학개론"]#"헌법", "형사법", "경찰학", "형법", "형사소송법", "경찰학개론"]
+TARGET_SUBJECTS = ["경찰학개론","헌법", "형사법", "경찰학", "형법", "형사소송법", "경찰학개론"]
 CIRCLED_CHOICE_CHARS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 CIRCLED_CHOICE_RE = re.compile(rf'^[{CIRCLED_CHOICE_CHARS}]')
 PLAIN_CHOICE_RE = re.compile(r'^\s*(\(?[1-9]\d?\)|[1-9]\d?\.)\s*')
@@ -199,7 +199,8 @@ def _split_block_on_gaps(block: Dict[str, Any], keep_first_qnum: Optional[str]) 
             current = [cur]
         else:
             current.append(cur)
-    chunks.append(current[:])
+    if current:
+        chunks.append(current)
 
     out: List[Dict[str, Any]] = []
     for idx, chunk in enumerate(chunks):
@@ -354,16 +355,13 @@ def extract_lines_by_side(pdf_path: str) -> List[Dict[str, Any]]:
         left = sorted([l for l in raw_lines if l.column == "left"], key=lambda L: (-L.y1, L.x0))
         right = sorted([l for l in raw_lines if l.column == "right"], key=lambda L: (-L.y1, L.x0))
         if ORDER_MODE == "pdfminer":
-            # EXACT pdfminer order (no re-sorting; footers already removed)
-            ordered = raw_lines[:]  # as collected from pdfminer’s layout walk
+            ordered = raw_lines[:]
         elif ORDER_MODE == "natural":
-            # single stream by geometry, regardless of column
             ordered = sorted(raw_lines, key=lambda L: (-L.y1, L.x0))
         elif ORDER_MODE == "column_first":
-            # left column (top→bottom), then right
             ordered = left + right
-        else:  # "column_stitch" (your current option 2)
-            ordered = _stitch_left_first(left, right, dy_window=28.0, size_tol=1.8, max_chain=6)
+        else:  # smart column stitching with floating block support
+            ordered = _stitch_smart(left, right)
         out.append(
             {
                 "page_index": idx,
@@ -384,15 +382,15 @@ OPT_RE_PLAIN = re.compile(r'^\s*(\(?[1-5]\)|[1-5]\.)\s*(.*)')
 
 # --- Added: unified anchor regex + inline splitter (supports multiple anchors per line) ---
 OPT_SPLIT_RE = re.compile(
-    r'''
-    (?:
-        (?P<circ>[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])
-      |
-        (?P<plain>
-            \(?(?P<num>([1-9]|1[0-9]|20))\) #| (?P<numdot>([1-9]|1[0-9]|20)\.) 날짜가 본문이나 문항에 있을 때 삐꾸됨
-        )
-    )
-    ''',
+    r"""
+    (?P<circ>[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])
+    |
+    \(\s*(?P<num_paren>[1-9]|1[0-9]|20)\s*\)
+    |
+    (?P<num_rparen>[1-9]|1[0-9]|20)\)
+    |
+    (?P<num_dot>[1-9]|1[0-9]|20)\.
+    """,
     re.VERBOSE,
 )
 
@@ -403,7 +401,16 @@ def split_inline_options(line_text: str):
         return []
     parts = []
     for i, m in enumerate(matches):
-        idx = m.group('circ') if m.group('circ') else m.group(0).strip()
+        if m.group('circ'):
+            idx = m.group('circ')
+        elif m.group('num_paren'):
+            idx = m.group('num_paren')
+        elif m.group('num_rparen'):
+            idx = m.group('num_rparen')
+        elif m.group('num_dot'):
+            idx = m.group('num_dot')
+        else:
+            idx = m.group(0).strip()
         start = m.end()
         end = matches[i+1].start() if i+1 < len(matches) else len(s)
         body = s[start:end].strip()
@@ -453,7 +460,101 @@ def _reshape_matrix_options(opts: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return out
 
 
-def _parse_qas_from_lines(lines: List[str], subject: str, year: Optional[int], target: Optional[str]) -> List[Dict[str, Any]]:
+def _collect_matrix_block(lines: List[Line], start: int) -> Tuple[List[Line], int]:
+    block: List[Line] = []
+    j = start
+    while j < len(lines):
+        text = (lines[j].text or '').strip()
+        if j > start and QNUM_RE.match(text):
+            break
+        block.append(lines[j])
+        j += 1
+    return block, j
+
+
+def _parse_matrix_block(block: List[Line]) -> Optional[List[Dict[str, str]]]:
+    if not block:
+        return None
+
+    paren_columns: List[Tuple[str, float]] = []
+    circ_columns: List[Tuple[str, float]] = []
+    for ln in block:
+        label = (ln.text or '').strip()
+        if PAREN_MATRIX_LABEL_RE.match(label):
+            center = (ln.x0 + ln.x1) / 2.0
+            paren_columns.append((label, center))
+        elif MATRIX_LABEL_RE.match(label):
+            center = (ln.x0 + ln.x1) / 2.0
+            circ_columns.append((label, center))
+    columns = paren_columns if len(paren_columns) >= 2 else circ_columns
+    use_paren_labels = len(paren_columns) >= 2
+    if len(columns) < 2:
+        return None
+    columns.sort(key=lambda item: item[1])
+    column_labels = [label for label, _ in columns]
+    column_centers = [center for _, center in columns]
+
+    rows: List[Dict[str, Any]] = []
+    anchor_lines: set[int] = set()
+    for ln in block:
+        text = (ln.text or '').strip()
+        if not text:
+            continue
+        m_circ = CIRCLED_CHOICE_RE.match(text)
+        m_plain = PLAIN_CHOICE_RE.match(text)
+        anchor = None
+        remainder = ''
+        if m_circ:
+            anchor = m_circ.group(0)
+            remainder = text[m_circ.end():].strip()
+        elif m_plain:
+            anchor = m_plain.group(1)
+            remainder = text[m_plain.end():].strip()
+        if anchor:
+            row = {
+                'index': anchor,
+                'y': ln.y1,
+                'cols': [[] for _ in column_labels],
+            }
+            if remainder:
+                row['cols'][0].append(remainder)
+            rows.append(row)
+            anchor_lines.add(id(ln))
+    if len(rows) < 2:
+        return None
+
+    rows.sort(key=lambda r: -r['y'])
+
+    for ln in block:
+        if id(ln) in anchor_lines:
+            continue
+        text = (ln.text or '').strip()
+        if not text:
+            continue
+        if use_paren_labels and PAREN_MATRIX_LABEL_RE.match(text):
+            continue
+        if not use_paren_labels and MATRIX_LABEL_RE.match(text):
+            continue
+        if CIRCLED_CHOICE_RE.match(text) or PLAIN_CHOICE_RE.match(text):
+            continue
+        center = (ln.x0 + ln.x1) / 2.0
+        col_idx = min(range(len(column_centers)), key=lambda idx: abs(column_centers[idx] - center))
+        row = min(rows, key=lambda r: abs(r['y'] - ln.y1))
+        row['cols'][col_idx].append(text)
+
+    options: List[Dict[str, str]] = []
+    for row in rows:
+        pieces = []
+        for label, texts in zip(column_labels, row['cols']):
+            cell = ' '.join(txt for txt in texts if txt).strip()
+            if not cell:
+                continue
+            pieces.append(f"{label} {cell}")
+        options.append({'index': row['index'], 'text': ' / '.join(pieces)})
+    return options
+
+
+def _parse_qas_from_lines(lines: List[Line], subject: str, year: Optional[int], target: Optional[str]) -> List[Dict[str, Any]]:
     qas: List[Dict[str, Any]] = []
     qnum, qtxt, opts, cur_opt, cur_txt = None, [], [], None, []
 
@@ -479,16 +580,30 @@ def _parse_qas_from_lines(lines: List[str], subject: str, year: Optional[int], t
             })
         qnum, qtxt, opts = None, [], []
 
-    for ln in lines:
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        text = (raw.text if isinstance(raw, Line) else str(raw)) or ''
+        stripped = text.strip()
         # 1) Detect start of a new question
-        m_q = QNUM_RE.match(ln)
+        m_q = QNUM_RE.match(stripped)
         if m_q:
             flush_opt(); flush_q()
             qnum = int(m_q.group(1)); qtxt = [m_q.group(2).strip()]
+            i += 1
             continue
 
+        if qnum and (MATRIX_LABEL_RE.match(stripped) or PAREN_MATRIX_LABEL_RE.match(stripped)):
+            block, next_idx = _collect_matrix_block(lines, i)
+            matrix_opts = _parse_matrix_block(block)
+            if matrix_opts:
+                flush_opt()
+                opts.extend(matrix_opts)
+                i = next_idx
+                continue
+
         # 2) Split inline options: a physical line may have multiple anchors (e.g., "② ... ③ ... ④ ...")
-        parts = split_inline_options(ln)
+        parts = split_inline_options(text)
         if parts and qnum:
             # Close previous option (if any) before starting anchors
             flush_opt()
@@ -500,6 +615,7 @@ def _parse_qas_from_lines(lines: List[str], subject: str, year: Optional[int], t
             last_idx, last_body = parts[-1]
             cur_opt = last_idx
             cur_txt = [last_body.strip()] if last_body else []
+            i += 1
             continue
 
         # 3) Continuations
@@ -551,10 +667,10 @@ def extract_all_subjects_qa(
         audit_rows.append((pg, subj, current_subj, skip, action))
         if current_subj not in TARGET_SUBJECTS:
             continue
-        ordered_lines = [l.text for l in p.get("ordered") or []]
+        ordered_lines = list(p.get("ordered") or [])
         if not ordered_lines:
-            left_blocks = [l.text for l in p.get("left") or []]
-            right_blocks = [r.text for r in p.get("right") or []]
+            left_blocks = list(p.get("left") or [])
+            right_blocks = list(p.get("right") or [])
             ordered_lines = left_blocks + right_blocks
         per_subject[current_subj].append((current_target or "default", ordered_lines))
 
