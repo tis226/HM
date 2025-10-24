@@ -1,0 +1,28 @@
+page,detected_subject,current_subject,skip,action
+1,,,False,SKIP
+2,한국사,,True,RESET (non-target)
+3,,,True,SKIP
+4,영어,,True,RESET (non-target)
+5,,,True,SKIP
+6,,,True,SKIP
+7,형법,,True,RESET (non-target)
+8,,,True,SKIP
+9,,,True,SKIP
+10,형사소송법,,True,RESET (non-target)
+11,,,True,SKIP
+12,,,True,SKIP
+13,,,True,SKIP
+14,경찰학개론,경찰학개론,False,ENTER 경찰학개론
+15,,경찰학개론,False,INHERIT 경찰학개론
+16,,경찰학개론,False,INHERIT 경찰학개론
+17,국어,,True,RESET (non-target)
+18,,,True,SKIP
+19,,,True,SKIP
+20,수학,,True,RESET (non-target)
+21,,,True,SKIP
+22,사회,,True,RESET (non-target)
+23,,,True,SKIP
+24,,,True,SKIP
+25,과학,,True,RESET (non-target)
+26,,,True,SKIP
+27,,,True,SKIP
