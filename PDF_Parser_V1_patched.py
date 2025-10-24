@@ -21,7 +21,7 @@ from pdfminer.layout import LAParams, LTTextContainer, LTTextLine, LTChar, LTLin
 # CONFIG RESTRAINTS
 # ================================================================
 TARGET_SUBJECTS = ["경찰학개론","헌법", "형사법", "경찰학", "형법", "형사소송법", "경찰학개론"]
-CIRCLED_CHOICE_CHARS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+CIRCLED_CHOICE_CHARS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳ⓛ"
 CIRCLED_CHOICE_RE = re.compile(rf'^[{CIRCLED_CHOICE_CHARS}]')
 PLAIN_CHOICE_RE = re.compile(r'^\s*(\(?[1-9]\d?\)|[1-9]\d?\.)\s*')
 QNUM_RE = re.compile(r'^\s*(\d{1,3})\.\s*(.*)')
@@ -41,6 +41,9 @@ DISPUTE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 ORDER_MODE = "smart"
+
+CIRCLED_TO_INT = {ch: idx + 1 for idx, ch in enumerate(CIRCLED_CHOICE_CHARS)}
+CIRCLED_TO_INT['ⓛ'] = 1
 
 # ================================================================
 # DATA STRUCTURES
@@ -106,6 +109,52 @@ def _auto_x_threshold(x_centers: List[float]) -> Optional[float]:
         if left: c1 = sum(left) / len(left)
         if right: c2 = sum(right) / len(right)
     return (c1 + c2) / 2.0
+
+
+def _block_line_sort_key(ln: Line, anchor_column: str):
+    text = (ln.text if isinstance(ln, Line) else str(ln) or "").strip()
+    if QNUM_RE.match(text):
+        priority = 0
+    elif getattr(ln, "column", anchor_column) == anchor_column:
+        priority = 1
+    else:
+        priority = 2
+    return (priority, -ln.y1, ln.x0)
+
+
+def _choice_label_to_int(label: str) -> Optional[int]:
+    if not label:
+        return None
+    if label in CIRCLED_TO_INT:
+        return CIRCLED_TO_INT[label]
+    digits = re.sub(r'\D', '', label)
+    if digits:
+        try:
+            return int(digits)
+        except ValueError:
+            return None
+    return None
+
+
+def _collect_choice_ordinals(lines: Iterable[Line]) -> List[int]:
+    ordinals: List[int] = []
+    for ln in lines:
+        text = (ln.text if isinstance(ln, Line) else str(ln) or "").strip()
+        if not text:
+            continue
+        if QNUM_RE.match(text):
+            continue
+        if CIRCLED_CHOICE_RE.match(text):
+            idx = _choice_label_to_int(text[0])
+            if idx is not None:
+                ordinals.append(idx)
+            continue
+        m = PLAIN_CHOICE_RE.match(text)
+        if m:
+            idx = _choice_label_to_int(m.group(1))
+            if idx is not None:
+                ordinals.append(idx)
+    return ordinals
 
 # ================================================================
 # FOOTER REMOVAL
@@ -277,23 +326,46 @@ def _merge_column_blocks(left_blocks: List[Dict[str, Any]], right_blocks: List[D
     else:
         left_first = lf_q <= rf_q
 
-    def _attach(source: List[Dict[str, Any]], anchors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _attach(source: List[Dict[str, Any]], anchors: List[Dict[str, Any]], prefer_last: bool = False) -> List[Dict[str, Any]]:
         leftovers: List[Dict[str, Any]] = []
         for blk in source:
             if not anchors:
                 leftovers.append(blk)
                 continue
-            anchor = min(anchors, key=lambda b: abs(b["top"] - blk["top"]))
-            if abs(anchor["top"] - blk["top"]) > 220.0:
+            blk_ordinals = _collect_choice_ordinals(blk["lines"])
+            anchor = None
+            if blk_ordinals:
+                blk_min = min(blk_ordinals)
+                sequential_candidates = []
+                blank_candidates = []
+                for cand in anchors:
+                    cand_ordinals = _collect_choice_ordinals(cand["lines"])
+                    if cand_ordinals and max(cand_ordinals) < blk_min:
+                        sequential_candidates.append((cand["top"], cand))
+                    elif cand_ordinals == [] and cand.get("qnum"):
+                        blank_candidates.append((cand["top"], cand))
+                if sequential_candidates:
+                    # Prefer the most recently appearing candidate in reading order (lowest y)
+                    anchor = min(sequential_candidates, key=lambda item: item[0])[1]
+                elif blank_candidates:
+                    anchor = min(blank_candidates, key=lambda item: item[0])[1]
+            if anchor is None:
+                anchor = min(anchors, key=lambda b: abs(b["top"] - blk["top"]))
+            gap = abs(anchor["top"] - blk["top"])
+            if prefer_last and gap > 220.0:
+                anchor = min(anchors, key=lambda b: b["top"])
+                gap = abs(anchor["top"] - blk["top"])
+            elif gap > 220.0 and not blk_ordinals:
                 leftovers.append(blk)
                 continue
             merged = anchor["lines"] + blk["lines"]
-            anchor["lines"] = sorted(merged, key=lambda ln: (-ln.y1, ln.x0))
+            anchor_col = anchor.get("column", getattr(anchor["lines"][0], "column", "left"))
+            anchor["lines"] = sorted(merged, key=lambda ln: _block_line_sort_key(ln, anchor_col))
             anchor["top"] = max(ln.y1 for ln in anchor["lines"])
         return leftovers
 
-    loose_left = _attach(left_float, right_fixed)
-    loose_right = _attach(right_float, left_fixed)
+    loose_left = _attach(left_float, right_fixed, prefer_last=not left_first)
+    loose_right = _attach(right_float, left_fixed, prefer_last=left_first)
 
     ordered: List[Dict[str, Any]] = []
 
@@ -383,7 +455,7 @@ OPT_RE_PLAIN = re.compile(r'^\s*(\(?[1-5]\)|[1-5]\.)\s*(.*)')
 # --- Added: unified anchor regex + inline splitter (supports multiple anchors per line) ---
 OPT_SPLIT_RE = re.compile(
     r"""
-    (?P<circ>[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])
+    (?P<circ>[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳ⓛ])
     |
     \(\s*(?P<num_paren>[1-9]|1[0-9]|20)\s*\)
     |
