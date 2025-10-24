@@ -32,12 +32,15 @@ DISPUTE_RE = re.compile(
     re.IGNORECASE,
 )
 
+MATRIX_LABEL_RE = re.compile(r'^[㉠-㉷]$')
+PAREN_MATRIX_LABEL_RE = re.compile(r'^\(?[가-힣]\)?$')
+
 # Exact boilerplate line (no middle text)
 DISPUTE_LINE_RE = re.compile(
     r"^\s*다툼이\s*있는\s*경우\s*판례에\s*의함\s*$",
     re.IGNORECASE,
 )
-ORDER_MODE = "pdfminer" 
+ORDER_MODE = "smart"
 
 # ================================================================
 # DATA STRUCTURES
@@ -175,6 +178,158 @@ def _detect_subject_for_page(all_elements: List[Any], page_width: float, page_he
 # ================================================================
 # PAGE SPLITTING
 # ================================================================
+def _split_block_on_gaps(block: Dict[str, Any], keep_first_qnum: Optional[str]) -> List[Dict[str, Any]]:
+    """Split a block whenever vertical gaps suggest a new section."""
+    lines: List[Line] = block["lines"]
+    if len(lines) <= 1:
+        clone = dict(block)
+        clone["qnum"] = keep_first_qnum
+        return [clone]
+
+    # Questions with an explicit number can legitimately span columns, so allow
+    # tighter splitting to peel off follow-up fragments (e.g., next question's
+    # options) while keeping unnumbered continuations intact.
+    threshold = 45.0 if keep_first_qnum else 80.0
+
+    chunks: List[List[Line]] = []
+    current: List[Line] = [lines[0]]
+    for prev, cur in zip(lines, lines[1:]):
+        if abs(prev.y1 - cur.y1) > threshold:
+            chunks.append(current[:])
+            current = [cur]
+        else:
+            current.append(cur)
+    chunks.append(current[:])
+
+    out: List[Dict[str, Any]] = []
+    for idx, chunk in enumerate(chunks):
+        q = keep_first_qnum if idx == 0 else None
+        out.append(
+            {
+                "lines": chunk,
+                "top": max(ln.y1 for ln in chunk),
+                "qnum": q,
+                "column": block["column"],
+            }
+        )
+    return out
+
+
+def _group_column_blocks(lines: List[Line], column: str) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    current: List[Line] = []
+    current_q: Optional[str] = None
+
+    for ln in lines:
+        text = ln.text.strip()
+        m = QNUM_RE.match(text)
+        if m and current:
+            blocks.extend(
+                _split_block_on_gaps(
+                    {"lines": current, "top": max(l.y1 for l in current), "qnum": current_q, "column": column},
+                    current_q,
+                )
+            )
+            current = [ln]
+            current_q = m.group(1)
+        else:
+            if not current:
+                current = [ln]
+                current_q = m.group(1) if m else None
+            else:
+                current.append(ln)
+    if current:
+        blocks.extend(
+            _split_block_on_gaps(
+                {"lines": current, "top": max(l.y1 for l in current), "qnum": current_q, "column": column},
+                current_q,
+            )
+        )
+    return blocks
+
+
+def _first_qnum(blocks: List[Dict[str, Any]]) -> Optional[int]:
+    for blk in blocks:
+        q = blk.get("qnum")
+        if q is None:
+            continue
+        try:
+            return int(q)
+        except ValueError:
+            continue
+    return None
+
+
+def _merge_column_blocks(left_blocks: List[Dict[str, Any]], right_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    left_fixed = [b for b in left_blocks if b.get("qnum")]
+    left_float = [b for b in left_blocks if not b.get("qnum")]
+    right_fixed = [b for b in right_blocks if b.get("qnum")]
+    right_float = [b for b in right_blocks if not b.get("qnum")]
+
+    lf_q, rf_q = _first_qnum(left_blocks), _first_qnum(right_blocks)
+    if lf_q is None and rf_q is None:
+        left_first = True
+    elif lf_q is None:
+        left_first = False
+    elif rf_q is None:
+        left_first = True
+    else:
+        left_first = lf_q <= rf_q
+
+    def _attach(source: List[Dict[str, Any]], anchors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        leftovers: List[Dict[str, Any]] = []
+        for blk in source:
+            if not anchors:
+                leftovers.append(blk)
+                continue
+            anchor = min(anchors, key=lambda b: abs(b["top"] - blk["top"]))
+            if abs(anchor["top"] - blk["top"]) > 220.0:
+                leftovers.append(blk)
+                continue
+            merged = anchor["lines"] + blk["lines"]
+            anchor["lines"] = sorted(merged, key=lambda ln: (-ln.y1, ln.x0))
+            anchor["top"] = max(ln.y1 for ln in anchor["lines"])
+        return leftovers
+
+    loose_left = _attach(left_float, right_fixed)
+    loose_right = _attach(right_float, left_fixed)
+
+    ordered: List[Dict[str, Any]] = []
+
+    def _append(block: Dict[str, Any]) -> None:
+        ordered.append(block)
+
+    if left_first:
+        for blk in left_fixed:
+            _append(blk)
+        for blk in right_fixed:
+            _append(blk)
+    else:
+        for blk in right_fixed:
+            _append(blk)
+        for blk in left_fixed:
+            _append(blk)
+
+    if left_first:
+        ordered.extend(loose_left)
+        ordered.extend(loose_right)
+    else:
+        ordered.extend(loose_right)
+        ordered.extend(loose_left)
+
+    return ordered
+
+
+def _stitch_smart(left: List[Line], right: List[Line]) -> List[Line]:
+    left_blocks = _group_column_blocks(left, "left")
+    right_blocks = _group_column_blocks(right, "right")
+    merged_blocks = _merge_column_blocks(left_blocks, right_blocks)
+    ordered: List[Line] = []
+    for blk in merged_blocks:
+        ordered.extend(blk["lines"])
+    return ordered
+
+
 def extract_lines_by_side(pdf_path: str) -> List[Dict[str, Any]]:
     laparams = LAParams(char_margin=3.0, word_margin=0.2, line_margin=0.3)
     out = []
@@ -349,9 +504,10 @@ def _parse_qas_from_lines(lines: List[str], subject: str, year: Optional[int], t
 
         # 3) Continuations
         if cur_opt:
-            cur_txt.append(ln.strip())
+            cur_txt.append(stripped)
         elif qnum:
-            qtxt.append(ln.strip())
+            qtxt.append(stripped)
+        i += 1
 
     flush_opt(); flush_q()
     return qas
