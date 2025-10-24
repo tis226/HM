@@ -1,0 +1,191 @@
+[
+  {
+    "page": 1,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": false,
+    "action": "SKIP"
+  },
+  {
+    "page": 2,
+    "detected_subject": "한국사",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 3,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 4,
+    "detected_subject": "영어",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 5,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 6,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 7,
+    "detected_subject": "형법",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 8,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 9,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 10,
+    "detected_subject": "형사소송법",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 11,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 12,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 13,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 14,
+    "detected_subject": "경찰학개론",
+    "current_subject": "경찰학개론",
+    "skip": false,
+    "action": "ENTER 경찰학개론"
+  },
+  {
+    "page": 15,
+    "detected_subject": null,
+    "current_subject": "경찰학개론",
+    "skip": false,
+    "action": "INHERIT 경찰학개론"
+  },
+  {
+    "page": 16,
+    "detected_subject": null,
+    "current_subject": "경찰학개론",
+    "skip": false,
+    "action": "INHERIT 경찰학개론"
+  },
+  {
+    "page": 17,
+    "detected_subject": "국어",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 18,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 19,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 20,
+    "detected_subject": "수학",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 21,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 22,
+    "detected_subject": "사회",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 23,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 24,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 25,
+    "detected_subject": "과학",
+    "current_subject": null,
+    "skip": true,
+    "action": "RESET (non-target)"
+  },
+  {
+    "page": 26,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  },
+  {
+    "page": 27,
+    "detected_subject": null,
+    "current_subject": null,
+    "skip": true,
+    "action": "SKIP"
+  }
+]
