@@ -199,7 +199,7 @@ def extract_lines_by_side(pdf_path: str) -> List[Dict[str, Any]]:
         left = sorted([l for l in raw_lines if l.column == "left"], key=lambda L: (-L.y1, L.x0))
         right = sorted([l for l in raw_lines if l.column == "right"], key=lambda L: (-L.y1, L.x0))
         if ORDER_MODE == "pdfminer":
-    # EXACT pdfminer order (no re-sorting; footers already removed)
+            # EXACT pdfminer order (no re-sorting; footers already removed)
             ordered = raw_lines[:]  # as collected from pdfminer’s layout walk
         elif ORDER_MODE == "natural":
             # single stream by geometry, regardless of column
@@ -208,8 +208,17 @@ def extract_lines_by_side(pdf_path: str) -> List[Dict[str, Any]]:
             # left column (top→bottom), then right
             ordered = left + right
         else:  # "column_stitch" (your current option 2)
-            ordered = _stitch_left_first(left, right, dy_window=28.0, size_tol=1.8, max_chain=6)    
-        out.append({"page_index": idx, "subject": subj, "target": target, "left": left, "right": right})
+            ordered = _stitch_left_first(left, right, dy_window=28.0, size_tol=1.8, max_chain=6)
+        out.append(
+            {
+                "page_index": idx,
+                "subject": subj,
+                "target": target,
+                "left": left,
+                "right": right,
+                "ordered": ordered,
+            }
+        )
     return out
 
 # ================================================================
@@ -248,6 +257,47 @@ def split_inline_options(line_text: str):
 # --- end added ---
 
 
+def _reshape_matrix_options(opts: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Detects simple row/column matrices flattened into a single option and spreads values across options."""
+    if not opts:
+        return opts
+    nonempty = [opt for opt in opts if (opt.get("text") or "").strip()]
+    empty = [opt for opt in opts if not (opt.get("text") or "").strip()]
+    if len(nonempty) != 1 or not empty:
+        return opts
+    combined = nonempty[0]["text"].strip()
+    tokens = combined.split()
+    if not tokens:
+        return opts
+    rows: List[Tuple[str, List[str]]] = []
+    current_label = None
+    current_values: List[str] = []
+    for token in tokens:
+        if token.startswith("(") and token.endswith(")"):
+            if current_label is not None:
+                rows.append((current_label, current_values))
+                current_values = []
+            current_label = token
+        else:
+            current_values.append(token)
+    if current_label is not None:
+        rows.append((current_label, current_values))
+    option_count = len(opts)
+    if not rows or any(len(values) != option_count for _, values in rows):
+        return opts
+    rebuilt: Dict[str, List[str]] = {opt["index"]: [] for opt in opts}
+    order = [opt["index"] for opt in opts]
+    for label, values in rows:
+        for idx, value in enumerate(values):
+            rebuilt[order[idx]].append(f"{label} {value}".strip())
+    out = []
+    for opt in opts:
+        pieces = rebuilt.get(opt["index"], [])
+        text = " ".join(pieces).strip()
+        out.append({"index": opt["index"], "text": text})
+    return out
+
+
 def _parse_qas_from_lines(lines: List[str], subject: str, year: Optional[int], target: Optional[str]) -> List[Dict[str, Any]]:
     qas: List[Dict[str, Any]] = []
     qnum, qtxt, opts, cur_opt, cur_txt = None, [], [], None, []
@@ -261,6 +311,7 @@ def _parse_qas_from_lines(lines: List[str], subject: str, year: Optional[int], t
     def flush_q():
         nonlocal qnum, qtxt, opts, qas
         if qnum:
+            normalized_opts = _reshape_matrix_options(opts[:])
             qas.append({
                 "subject": subject,
                 "year": year,
@@ -268,7 +319,7 @@ def _parse_qas_from_lines(lines: List[str], subject: str, year: Optional[int], t
                 "content": {
                     "question_number": qnum,
                     "question_text": " ".join(qtxt).strip(),
-                    "options": opts[:],
+                    "options": normalized_opts,
                 },
             })
         qnum, qtxt, opts = None, [], []
@@ -342,14 +393,14 @@ def extract_all_subjects_qa(
             continue
         if audit: print(f"[page {pg}] header={subj} target={target} -> {action}")
         audit_rows.append((pg, subj, current_subj, skip, action))
-        if current_subj not in TARGET_SUBJECTS: continue
-        lines = []
-        for side in ["left", "right"]:
-            blocks = [b.text for b in getattr(p[side], 'text', [])] if isinstance(p[side], list) else []
-        left_blocks = [l.text for l in p["left"]] if p["left"] else []
-        right_blocks = [r.text for r in p["right"]] if p["right"] else []
-        all_lines = left_blocks + right_blocks
-        per_subject[current_subj].append((current_target or "default", all_lines))
+        if current_subj not in TARGET_SUBJECTS:
+            continue
+        ordered_lines = [l.text for l in p.get("ordered") or []]
+        if not ordered_lines:
+            left_blocks = [l.text for l in p.get("left") or []]
+            right_blocks = [r.text for r in p.get("right") or []]
+            ordered_lines = left_blocks + right_blocks
+        per_subject[current_subj].append((current_target or "default", ordered_lines))
 
     combined = []
     for subj in TARGET_SUBJECTS:
